@@ -34,11 +34,20 @@ jobs:
     - name: Build with PyInstaller
       run: pyinstaller --noconsole --onefile --name AutoSign_${{ matrix.os }} app.py
 
+    - name: Package macOS App
+      if: matrix.os == 'macos-latest'
+      run: |
+        cd dist
+        zip -r AutoSign-macOS.zip AutoSign_${{ matrix.os }}.app
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: AutoSign-${{ matrix.os }}
-        path: dist/AutoSign_${{ matrix.os }}*
+        path: |
+          dist/AutoSign_${{ matrix.os }}
+          dist/AutoSign_${{ matrix.os }}.exe
+          dist/AutoSign-macOS.zip
 
   release:
     needs: build
@@ -51,6 +60,6 @@ jobs:
       with:
         files: |
           AutoSign-ubuntu-latest/AutoSign_ubuntu-latest
-          AutoSign-macos-latest/AutoSign_macos-latest
+          AutoSign-macos-latest/AutoSign-macOS.zip
           AutoSign-windows-latest/AutoSign_windows-latest.exe
         generate_release_notes: true
