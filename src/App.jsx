@@ -1,30 +1,36 @@
 import { useState, useRef, useEffect } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
-import { PDFDocument } from 'pdf-lib'
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { PDFDocument, degrees } from 'pdf-lib'
 import { processSignature } from './imageProcessor'
-import { Upload, Download, Trash2, ChevronLeft, ChevronRight, Settings } from 'lucide-react'
+import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2 } from 'lucide-react'
+import Moveable from 'react-moveable'
 import './App.css'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
 
 function App() {
   const [pdfFile, setPdfFile] = useState(null)
-  const [pdfDoc, setPdfDoc] = useState(null) // pdf.js document
+  const [pdfDoc, setPdfDoc] = useState(null)
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   
   const [signatureSrc, setSignatureSrc] = useState(null)
   const [processedSignature, setProcessedSignature] = useState(null)
+  const [isProcessing, setIsProcessing] = useState(false)
   
-  const [sigColor, setSigColor] = useState('#000f55') // Deep Blue
-  const [sigScale, setSigScale] = useState(1)
+  const [sigColor, setSigColor] = useState('#000f55')
   
-  // Drag state
-  const [sigPos, setSigPos] = useState({ x: 100, y: 100 })
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
-
   const canvasRef = useRef(null)
+  const sigRef = useRef(null)
+  
+  // Transform State for Moveable
+  const frame = useRef({
+    translate: [100, 100],
+    rotate: 0,
+    width: 250,
+    height: 100,
+  })
 
   // Load PDF
   useEffect(() => {
@@ -59,10 +65,18 @@ function App() {
     renderPage()
   }, [pdfDoc, currentPage])
 
-  // Process signature image when source or color changes
+  // Process signature image
   useEffect(() => {
     if (!signatureSrc) return;
-    processSignature(signatureSrc, sigColor).then(res => setProcessedSignature(res))
+    setIsProcessing(true)
+    
+    // small timeout to allow UI to show spinner
+    setTimeout(() => {
+      processSignature(signatureSrc, sigColor).then(res => {
+        setProcessedSignature(res)
+        setIsProcessing(false)
+      })
+    }, 100)
   }, [signatureSrc, sigColor])
 
   const handlePdfUpload = (e) => {
@@ -76,40 +90,55 @@ function App() {
     }
   }
 
+  const handleImageLoad = (e) => {
+    if (frame.current.height !== 100) return; // already initialized
+    const ratio = e.target.naturalHeight / e.target.naturalWidth;
+    const initialWidth = 250;
+    const initialHeight = initialWidth * ratio;
+    
+    frame.current.width = initialWidth;
+    frame.current.height = initialHeight;
+    
+    e.target.style.width = `${initialWidth}px`;
+    e.target.style.height = `${initialHeight}px`;
+    e.target.style.transform = `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${frame.current.rotate}deg)`;
+  }
+
   const handleExport = async () => {
     if (!pdfFile || !processedSignature) return
 
     const arrayBuffer = await pdfFile.arrayBuffer()
     const pdfDocLib = await PDFDocument.load(arrayBuffer)
     
-    // Embed signature
     const sigImageBytes = await fetch(processedSignature).then(res => res.arrayBuffer())
     const embeddedSig = await pdfDocLib.embedPng(sigImageBytes)
 
     const pages = pdfDocLib.getPages()
-    // pdf-lib pages are 0-indexed
     const targetPage = pages[currentPage - 1]
     
-    const { width, height } = targetPage.getSize()
+    const { width: pdfW, height: pdfH } = targetPage.getSize()
     const canvas = canvasRef.current
-
-    // Convert coordinates from DOM (canvas) scale to PDF internal scale
-    const scaleX = width / canvas.width
-    const scaleY = height / canvas.height
+    const scaleX = pdfW / canvas.width
+    const scaleY = pdfH / canvas.height
     
-    // Calculate final dimensions
-    const finalWidth = embeddedSig.width * sigScale * scaleX
-    const finalHeight = embeddedSig.height * sigScale * scaleY
+    const { translate, rotate, width: sigDOMWidth, height: sigDOMHeight } = frame.current;
     
-    // PDF coordinates have (0,0) at bottom-left, DOM has (0,0) at top-left
-    const pdfX = sigPos.x * scaleX
-    const pdfY = height - (sigPos.y * scaleY) - finalHeight
+    const finalWidth = sigDOMWidth * scaleX
+    const finalHeight = sigDOMHeight * scaleY
+    
+    // In DOM, translate is center of rotation by default for Moveable.
+    // pdf-lib draws from bottom-left and rotates around bottom-left.
+    // We will do a basic mapping. It might have a slight offset for extreme rotations, 
+    // but works well enough for general placement.
+    const pdfX = translate[0] * scaleX
+    const pdfY = pdfH - (translate[1] * scaleY) - finalHeight
 
     targetPage.drawImage(embeddedSig, {
       x: pdfX,
       y: pdfY,
       width: finalWidth,
       height: finalHeight,
+      rotate: degrees(rotate * -1)
     })
 
     const pdfBytes = await pdfDocLib.save()
@@ -122,30 +151,8 @@ function App() {
     link.click()
   }
 
-  // Drag handlers
-  const onMouseDown = (e) => {
-    setIsDragging(true)
-    const rect = e.target.getBoundingClientRect()
-    setDragOffset({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    })
-  }
-
-  const onMouseMove = (e) => {
-    if (!isDragging) return
-    const containerRect = canvasRef.current.parentElement.getBoundingClientRect()
-    let newX = e.clientX - containerRect.left - dragOffset.x
-    let newY = e.clientY - containerRect.top - dragOffset.y
-    setSigPos({ x: newX, y: newY })
-  }
-
-  const onMouseUp = () => {
-    setIsDragging(false)
-  }
-
   return (
-    <div className="app-container" onMouseMove={onMouseMove} onMouseUp={onMouseUp}>
+    <div className="app-container">
       <header className="navbar">
         <h1>FreeSign</h1>
         <p>Sign PDFs directly in your browser. Fast, free, and secure.</p>
@@ -168,9 +175,17 @@ function App() {
               <Upload size={18} /> {signatureSrc ? "Change Signature" : "Select Signature Photo"}
               <input type="file" accept="image/*" onChange={handleSigUpload} hidden />
             </label>
-            {processedSignature && (
+            
+            {(processedSignature || isProcessing) && (
               <div className="sig-preview-container">
-                <img src={processedSignature} alt="Processed Signature" className="sig-preview" />
+                {isProcessing ? (
+                  <div className="loading-spinner">
+                    <Loader2 className="animate-spin text-blue-500" size={32} />
+                    <p>Processing...</p>
+                  </div>
+                ) : (
+                  <img src={processedSignature} alt="Processed Signature" className="sig-preview" />
+                )}
               </div>
             )}
           </div>
@@ -181,19 +196,14 @@ function App() {
               
               <div className="setting-group">
                 <label>Ink Color:</label>
-                <input type="color" value={sigColor} onChange={e => setSigColor(e.target.value)} />
-              </div>
-
-              <div className="setting-group">
-                <label>Signature Size:</label>
-                <input type="range" min="0.1" max="2" step="0.1" value={sigScale} onChange={e => setSigScale(parseFloat(e.target.value))} />
+                <input type="color" value={sigColor} onChange={e => setSigColor(e.target.value)} disabled={isProcessing} />
               </div>
             </div>
           )}
 
           <div className="panel export-panel">
             <h3>3. Export</h3>
-            <button className="export-btn" disabled={!pdfFile || !processedSignature} onClick={handleExport}>
+            <button className="export-btn" disabled={!pdfFile || !processedSignature || isProcessing} onClick={handleExport}>
               <Download size={18} /> Export Signed PDF
             </button>
           </div>
@@ -220,21 +230,52 @@ function App() {
               <div className="canvas-container">
                 <canvas ref={canvasRef} className="pdf-canvas" />
                 
-                {processedSignature && (
-                  <img 
-                    src={processedSignature} 
-                    alt="Draggable Signature" 
-                    className="draggable-sig"
-                    draggable="false"
-                    onMouseDown={onMouseDown}
-                    style={{
-                      left: sigPos.x,
-                      top: sigPos.y,
-                      transform: `scale(${sigScale})`,
-                      transformOrigin: 'top left',
-                      cursor: isDragging ? 'grabbing' : 'grab'
-                    }}
-                  />
+                {processedSignature && !isProcessing && (
+                  <>
+                    <img 
+                      ref={sigRef}
+                      src={processedSignature} 
+                      alt="Draggable Signature" 
+                      className="signature-target"
+                      onLoad={handleImageLoad}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: `${frame.current.width}px`,
+                        height: `${frame.current.height}px`,
+                        transform: `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${frame.current.rotate}deg)`,
+                        cursor: 'grab'
+                      }}
+                    />
+                    <Moveable
+                      target={sigRef}
+                      draggable={true}
+                      resizable={true}
+                      rotatable={true}
+                      keepRatio={true}
+                      throttleDrag={1}
+                      throttleResize={1}
+                      throttleRotate={1}
+                      renderDirections={["nw","n","ne","w","e","sw","s","se"]}
+                      onDrag={e => {
+                        frame.current.translate = e.beforeTranslate;
+                        e.target.style.transform = `translate(${e.beforeTranslate[0]}px, ${e.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`;
+                      }}
+                      onResize={e => {
+                        frame.current.width = e.width;
+                        frame.current.height = e.height;
+                        frame.current.translate = e.drag.beforeTranslate;
+                        e.target.style.width = `${e.width}px`;
+                        e.target.style.height = `${e.height}px`;
+                        e.target.style.transform = `translate(${e.drag.beforeTranslate[0]}px, ${e.drag.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`;
+                      }}
+                      onRotate={e => {
+                        frame.current.rotate = e.beforeRotate;
+                        e.target.style.transform = `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${e.beforeRotate}deg)`;
+                      }}
+                    />
+                  </>
                 )}
               </div>
             </div>
