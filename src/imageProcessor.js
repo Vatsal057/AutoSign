@@ -27,29 +27,32 @@ export async function processSignature(imageSrc, colorHex) {
         // Luminance
         const lum = 0.299 * pr + 0.587 * pg + 0.114 * pb;
         
-        // Threshold (if it's dark, it's ink; if it's bright, it's paper)
-        // 150 is a good threshold for ink on white paper
-        if (lum < 150) {
-          // It is ink. Set color and calculate bounding box.
+        // Anti-aliasing smooth transition
+        const blackPoint = 100;
+        const whitePoint = 210;
+        let opacity = 0;
+        
+        if (lum <= blackPoint) {
+          opacity = 255;
+        } else if (lum >= whitePoint) {
+          opacity = 0;
+        } else {
+          opacity = Math.round(255 * (1 - (lum - blackPoint) / (whitePoint - blackPoint)));
+        }
+
+        if (opacity > 10) {
           data[i] = r;
           data[i+1] = g;
           data[i+2] = b;
-
-          // Anti-aliasing logic based on luminance distance from threshold
-          // The darker it is, the more opaque it is
-          const opacity = Math.max(0, Math.min(255, 255 - (lum * 1.7)));
           data[i+3] = opacity;
 
-          if (opacity > 10) {
-            const x = (i / 4) % canvas.width;
-            const y = Math.floor((i / 4) / canvas.width);
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
+          const x = (i / 4) % canvas.width;
+          const y = Math.floor((i / 4) / canvas.width);
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
         } else {
-          // Paper -> transparent
           data[i+3] = 0;
         }
       }

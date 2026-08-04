@@ -116,29 +116,69 @@ function App() {
     const pages = pdfDocLib.getPages()
     const targetPage = pages[currentPage - 1]
     
-    const { width: pdfW, height: pdfH } = targetPage.getSize()
+    const { width: unrotatedW, height: unrotatedH } = targetPage.getSize()
+    const pageRotation = targetPage.getRotation().angle || 0;
+    
+    let visualPdfW = unrotatedW;
+    let visualPdfH = unrotatedH;
+    
+    if (pageRotation === 90 || pageRotation === 270) {
+      visualPdfW = unrotatedH;
+      visualPdfH = unrotatedW;
+    }
+
     const canvas = canvasRef.current
-    const scaleX = pdfW / canvas.width
-    const scaleY = pdfH / canvas.height
+    const scaleX = visualPdfW / canvas.width
+    const scaleY = visualPdfH / canvas.height
     
     const { translate, rotate, width: sigDOMWidth, height: sigDOMHeight } = frame.current;
     
     const finalWidth = sigDOMWidth * scaleX
     const finalHeight = sigDOMHeight * scaleY
     
-    // In DOM, translate is center of rotation by default for Moveable.
-    // pdf-lib draws from bottom-left and rotates around bottom-left.
-    // We will do a basic mapping. It might have a slight offset for extreme rotations, 
-    // but works well enough for general placement.
-    const pdfX = translate[0] * scaleX
-    const pdfY = pdfH - (translate[1] * scaleY) - finalHeight
+    // DOM visual top-left coordinates
+    const visualX = translate[0] * scaleX;
+    const visualY = translate[1] * scaleY;
+    
+    // Center of the signature in visual space
+    const visualCx = visualX + finalWidth / 2;
+    const visualCy = visualY + finalHeight / 2;
+
+    let pdfCx = 0;
+    let pdfCy = 0;
+    let pdfRotation = 0;
+
+    // Map visual center to unrotated page center
+    if (pageRotation === 0) {
+      pdfCx = visualCx;
+      pdfCy = unrotatedH - visualCy;
+      pdfRotation = -rotate;
+    } else if (pageRotation === 90) {
+      pdfCx = visualCy;
+      pdfCy = unrotatedH - visualCx;
+      pdfRotation = -rotate - 90;
+    } else if (pageRotation === 180) {
+      pdfCx = unrotatedW - visualCx;
+      pdfCy = visualCy;
+      pdfRotation = -rotate - 180;
+    } else if (pageRotation === 270) {
+      pdfCx = unrotatedW - visualCy;
+      pdfCy = visualCx;
+      pdfRotation = -rotate - 270;
+    }
+
+    // pdf-lib drawImage rotates around the bottom-left corner of the image.
+    // Calculate where the bottom-left corner needs to be so the image is centered at (pdfCx, pdfCy)
+    const angleRad = (pdfRotation * Math.PI) / 180;
+    const pdfX = pdfCx - (finalWidth / 2 * Math.cos(angleRad) - finalHeight / 2 * Math.sin(angleRad));
+    const pdfY = pdfCy - (finalWidth / 2 * Math.sin(angleRad) + finalHeight / 2 * Math.cos(angleRad));
 
     targetPage.drawImage(embeddedSig, {
       x: pdfX,
       y: pdfY,
       width: finalWidth,
       height: finalHeight,
-      rotate: degrees(rotate * -1)
+      rotate: degrees(pdfRotation)
     })
 
     const pdfBytes = await pdfDocLib.save()
