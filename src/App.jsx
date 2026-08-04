@@ -1,366 +1,381 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDFDocument, degrees } from 'pdf-lib'
-import { processSignature } from './imageProcessor'
-import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2, PenTool, Image as ImageIcon } from 'lucide-react'
+import { vectorize } from './vectorizer/index.js'
+import { buildSvg } from './vectorizer/buildSvg.js'
+import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2, Pen, Sliders } from 'lucide-react'
 import Moveable from 'react-moveable'
-import { SignaturePad } from './SignaturePad'
-import { strokesToPngUrl, vectorizePathsToPngUrl } from './signatureUtils'
-import { vectorizeSignature } from './vectorizer'
 import './App.css'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
 
-function App() {
+// ─── Default signature style ─────────────────────────────────────────────────
+const DEFAULT_STYLE = {
+  color: '#000f55',
+  thickness: 4,
+  smoothness: 5,
+  taperAmount: 0.65,
+  linecap: 'round',
+  texture: 0,
+  useTaper: true,
+  tension: 6,
+}
+
+// ─── Rasterize an SVG string to a PNG data-URL at the given scale ────────────
+function rasterizeSvg(svgString, width, height, pixelRatio = 3) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width * pixelRatio
+      canvas.height = height * pixelRatio
+      const ctx = canvas.getContext('2d')
+      ctx.scale(pixelRatio, pixelRatio)
+      ctx.drawImage(img, 0, 0)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.onerror = reject
+    img.src = url
+  })
+}
+
+// ─── Small control components ─────────────────────────────────────────────────
+function Slider({ label, min, max, step = 0.01, value, onChange, unit = '' }) {
+  return (
+    <div className="setting-group">
+      <div className="setting-label-row">
+        <label>{label}</label>
+        <span className="setting-value">{typeof value === 'number' ? value.toFixed(step < 0.1 ? 2 : 0) : value}{unit}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={e => onChange(Number(e.target.value))} />
+    </div>
+  )
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  // PDF
   const [pdfFile, setPdfFile] = useState(null)
   const [pdfDoc, setPdfDoc] = useState(null)
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
-  
-  const [signatureMode, setSignatureMode] = useState('draw') // 'upload' or 'draw'
-  
+
+  // Signature
   const [signatureSrc, setSignatureSrc] = useState(null)
-  const [processedSignature, setProcessedSignature] = useState(null)
+  const [vectorData, setVectorData] = useState(null)   // { chains, width, height }
+  const [sigSvgUrl, setSigSvgUrl] = useState(null)     // object URL of current SVG
   const [isProcessing, setIsProcessing] = useState(false)
-  const [uploadedVectorPaths, setUploadedVectorPaths] = useState([])
-  
-  // Digital Ink State
-  const [drawnStrokes, setDrawnStrokes] = useState([])
-  const [inkThickness, setInkThickness] = useState(8)
-  const [inkSmoothing, setInkSmoothing] = useState(0.5)
-  const [inkTaper, setInkTaper] = useState(0.6)
-  
-  const [sigColor, setSigColor] = useState('#000f55')
-  
+
+  // Style — pure data, changing any field instantly re-renders SVG
+  const [style, setStyle] = useState(DEFAULT_STYLE)
+  const setSingleStyle = useCallback((key, val) =>
+    setStyle(s => ({ ...s, [key]: val })), [])
+
+  // DOM refs
   const canvasRef = useRef(null)
   const sigRef = useRef(null)
-  
-  // Transform State for Moveable
-  const frame = useRef({
-    translate: [100, 100],
-    rotate: 0,
-    width: 250,
-    height: 100,
-  })
 
-  // Load PDF
+  // Moveable transform state (tracked in a ref for perf — doesn't need to cause re-renders)
+  const frame = useRef({ translate: [50, 50], rotate: 0, width: 300, height: 120 })
+
+  // ── Load PDF ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!pdfFile) return;
-    const loadPdf = async () => {
-      const arrayBuffer = await pdfFile.arrayBuffer()
-      const loadedPdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-      setPdfDoc(loadedPdf)
-      setNumPages(loadedPdf.numPages)
-      setCurrentPage(1)
-    }
-    loadPdf()
+    if (!pdfFile) return
+    pdfjsLib.getDocument({ data: pdfFile.arrayBuffer() }).promise
+      .then(doc => {
+        setPdfDoc(doc)
+        setNumPages(doc.numPages)
+        setCurrentPage(1)
+      })
   }, [pdfFile])
 
-  // Render PDF Page
   useEffect(() => {
-    if (!pdfDoc) return;
-    const renderPage = async () => {
-      const page = await pdfDoc.getPage(currentPage)
-      const viewport = page.getViewport({ scale: 1.5 })
-      const canvas = canvasRef.current
-      const context = canvas.getContext('2d')
-      
-      canvas.width = viewport.width
-      canvas.height = viewport.height
+    if (!pdfFile) return
+    pdfFile.arrayBuffer().then(buf => {
+      pdfjsLib.getDocument({ data: buf }).promise.then(doc => {
+        setPdfDoc(doc)
+        setNumPages(doc.numPages)
+        setCurrentPage(1)
+      })
+    })
+  }, [pdfFile])
 
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise
-    }
-    renderPage()
+  // ── Render PDF page ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!pdfDoc || !canvasRef.current) return
+    let cancelled = false
+    pdfDoc.getPage(currentPage).then(page => {
+      if (cancelled) return
+      const vp = page.getViewport({ scale: 1.5 })
+      const canvas = canvasRef.current
+      canvas.width = vp.width
+      canvas.height = vp.height
+      page.render({ canvasContext: canvas.getContext('2d'), viewport: vp })
+    })
+    return () => { cancelled = true }
   }, [pdfDoc, currentPage])
 
-  // Process uploaded signature image
+  // ── Vectorize signature (expensive — runs only when image or threshold changes) ──
   useEffect(() => {
-    if (signatureMode === 'upload' && signatureSrc) {
-      setIsProcessing(true)
-      setTimeout(() => {
-        // Step 1: Remove background
-        processSignature(signatureSrc, sigColor).then(res => {
-          // Step 2: Auto-Trace to Vector
-          vectorizeSignature(res, inkSmoothing).then(paths => {
-             setUploadedVectorPaths(paths)
-          })
-        })
-      }, 100)
-    }
-  }, [signatureSrc, sigColor, signatureMode, inkSmoothing])
+    if (!signatureSrc) return
+    setIsProcessing(true)
+    setVectorData(null)
+    setSigSvgUrl(null)
 
-  // Apply Digital Ink styling to Uploaded Vectors
+    vectorize(signatureSrc).then(data => {
+      setVectorData(data)
+      setIsProcessing(false)
+    }).catch(err => {
+      console.error('Vectorization failed:', err)
+      setIsProcessing(false)
+    })
+  }, [signatureSrc])
+
+  // ── Re-render SVG whenever vector data OR style changes (instant) ──
   useEffect(() => {
-    if (signatureMode === 'upload' && uploadedVectorPaths.length > 0) {
-      vectorizePathsToPngUrl(uploadedVectorPaths, inkThickness, sigColor).then(url => {
-        setProcessedSignature(url)
-        setIsProcessing(false)
-      })
+    if (!vectorData) return
+
+    const svgString = buildSvg(vectorData.chains, vectorData.width, vectorData.height, style)
+
+    // Revoke old URL to prevent memory leaks
+    if (sigSvgUrl) URL.revokeObjectURL(sigSvgUrl)
+
+    const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    setSigSvgUrl(url)
+
+    // Update size hint based on SVG aspect ratio
+    if (sigRef.current) {
+      const ratio = vectorData.height / vectorData.width
+      const w = frame.current.width
+      const h = w * ratio
+      frame.current.height = h
+      sigRef.current.style.height = `${h}px`
     }
-  }, [uploadedVectorPaths, inkThickness, sigColor, signatureMode])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vectorData, style])
 
-  // Process drawn digital ink
-  useEffect(() => {
-    if (signatureMode === 'draw') {
-      if (drawnStrokes.length > 0) {
-         strokesToPngUrl(drawnStrokes, inkThickness, inkSmoothing, inkTaper, sigColor).then(url => {
-            setProcessedSignature(url)
-         })
-      } else {
-         setProcessedSignature(null)
-      }
-    }
-  }, [drawnStrokes, inkThickness, inkSmoothing, inkTaper, sigColor, signatureMode])
-
-  const handlePdfUpload = (e) => {
-    if (e.target.files[0]) setPdfFile(e.target.files[0])
-  }
-
-  const handleSigUpload = (e) => {
-    if (e.target.files[0]) {
-      const url = URL.createObjectURL(e.target.files[0])
-      setSignatureSrc(url)
-    }
-  }
-
+  // ── Image load → sync Moveable frame ────────────────────────────
   const handleImageLoad = (e) => {
-    if (frame.current.height !== 100 && signatureMode === 'upload') return; 
-    // Always recalculate aspect ratio when drawn ink updates, but keep translate/rotate state
-    const ratio = e.target.naturalHeight / e.target.naturalWidth;
-    const initialWidth = signatureMode === 'draw' ? 200 : 250;
-    const initialHeight = initialWidth * ratio;
-    
-    frame.current.width = initialWidth;
-    frame.current.height = initialHeight;
-    
-    e.target.style.width = `${initialWidth}px`;
-    e.target.style.height = `${initialHeight}px`;
-    e.target.style.transform = `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${frame.current.rotate}deg)`;
+    const ratio = e.target.naturalHeight / e.target.naturalWidth
+    const w = frame.current.width
+    const h = w * ratio
+    frame.current.height = h
+    e.target.style.width = `${w}px`
+    e.target.style.height = `${h}px`
+    e.target.style.transform =
+      `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${frame.current.rotate}deg)`
   }
 
+  // ── Upload handlers ──────────────────────────────────────────────
+  const handlePdfUpload = e => { if (e.target.files[0]) setPdfFile(e.target.files[0]) }
+  const handleSigUpload = e => {
+    if (e.target.files[0]) {
+      if (signatureSrc) URL.revokeObjectURL(signatureSrc)
+      setSignatureSrc(URL.createObjectURL(e.target.files[0]))
+      // Reset frame size for new image
+      frame.current = { translate: [50, 50], rotate: 0, width: 300, height: 120 }
+    }
+  }
+
+  // ── Export signed PDF ────────────────────────────────────────────
   const handleExport = async () => {
-    if (!pdfFile || !processedSignature) return
+    if (!pdfFile || !vectorData || !sigSvgUrl) return
 
-    const arrayBuffer = await pdfFile.arrayBuffer()
-    const pdfDocLib = await PDFDocument.load(arrayBuffer)
-    
-    const sigImageBytes = await fetch(processedSignature).then(res => res.arrayBuffer())
-    const embeddedSig = await pdfDocLib.embedPng(sigImageBytes)
+    // Build a fresh SVG at current style
+    const svgString = buildSvg(vectorData.chains, vectorData.width, vectorData.height, style)
 
+    // Rasterize at 3× for crisp PDF embed
+    const pngDataUrl = await rasterizeSvg(svgString, frame.current.width, frame.current.height, 3)
+
+    const pngBytes = await fetch(pngDataUrl).then(r => r.arrayBuffer())
+    const pdfBytes = await pdfFile.arrayBuffer()
+    const pdfDocLib = await PDFDocument.load(pdfBytes)
+
+    const embeddedSig = await pdfDocLib.embedPng(pngBytes)
     const pages = pdfDocLib.getPages()
     const targetPage = pages[currentPage - 1]
-    
+
     const { width: unrotatedW, height: unrotatedH } = targetPage.getSize()
-    const pageRotation = targetPage.getRotation().angle || 0;
-    
-    let visualPdfW = unrotatedW;
-    let visualPdfH = unrotatedH;
-    
+    const pageRotation = targetPage.getRotation().angle || 0
+
+    let visualPdfW = unrotatedW
+    let visualPdfH = unrotatedH
     if (pageRotation === 90 || pageRotation === 270) {
-      visualPdfW = unrotatedH;
-      visualPdfH = unrotatedW;
+      visualPdfW = unrotatedH; visualPdfH = unrotatedW
     }
 
     const canvas = canvasRef.current
     const scaleX = visualPdfW / canvas.width
     const scaleY = visualPdfH / canvas.height
-    
-    const { translate, rotate, width: sigDOMWidth, height: sigDOMHeight } = frame.current;
-    
-    const finalWidth = sigDOMWidth * scaleX
-    const finalHeight = sigDOMHeight * scaleY
-    
-    // DOM visual top-left coordinates
-    const visualX = translate[0] * scaleX;
-    const visualY = translate[1] * scaleY;
-    
-    // Center of the signature in visual space
-    const visualCx = visualX + finalWidth / 2;
-    const visualCy = visualY + finalHeight / 2;
 
-    let pdfCx = 0;
-    let pdfCy = 0;
-    let pdfRotation = 0;
+    const { translate, rotate, width: sigW, height: sigH } = frame.current
+    const finalW = sigW * scaleX
+    const finalH = sigH * scaleY
 
-    // Map visual center to unrotated page center
-    if (pageRotation === 0) {
-      pdfCx = visualCx;
-      pdfCy = unrotatedH - visualCy;
-      pdfRotation = -rotate;
-    } else if (pageRotation === 90) {
-      pdfCx = visualCy;
-      pdfCy = unrotatedH - visualCx;
-      pdfRotation = -rotate - 90;
-    } else if (pageRotation === 180) {
-      pdfCx = unrotatedW - visualCx;
-      pdfCy = visualCy;
-      pdfRotation = -rotate - 180;
-    } else if (pageRotation === 270) {
-      pdfCx = unrotatedW - visualCy;
-      pdfCy = visualCx;
-      pdfRotation = -rotate - 270;
-    }
+    const visualCx = translate[0] * scaleX + finalW / 2
+    const visualCy = translate[1] * scaleY + finalH / 2
 
-    // pdf-lib drawImage rotates around the bottom-left corner of the image.
-    // Calculate where the bottom-left corner needs to be so the image is centered at (pdfCx, pdfCy)
-    const angleRad = (pdfRotation * Math.PI) / 180;
-    const pdfX = pdfCx - (finalWidth / 2 * Math.cos(angleRad) - finalHeight / 2 * Math.sin(angleRad));
-    const pdfY = pdfCy - (finalWidth / 2 * Math.sin(angleRad) + finalHeight / 2 * Math.cos(angleRad));
+    let pdfCx = visualCx, pdfCy = unrotatedH - visualCy, pdfRot = -rotate
+    if (pageRotation === 90) { pdfCx = visualCy; pdfCy = unrotatedH - visualCx; pdfRot = -rotate - 90 }
+    else if (pageRotation === 180) { pdfCx = unrotatedW - visualCx; pdfCy = visualCy; pdfRot = -rotate - 180 }
+    else if (pageRotation === 270) { pdfCx = unrotatedW - visualCy; pdfCy = visualCx; pdfRot = -rotate - 270 }
 
-    targetPage.drawImage(embeddedSig, {
-      x: pdfX,
-      y: pdfY,
-      width: finalWidth,
-      height: finalHeight,
-      rotate: degrees(pdfRotation)
-    })
+    const rad = (pdfRot * Math.PI) / 180
+    const pdfX = pdfCx - (finalW / 2 * Math.cos(rad) - finalH / 2 * Math.sin(rad))
+    const pdfY = pdfCy - (finalW / 2 * Math.sin(rad) + finalH / 2 * Math.cos(rad))
 
-    const pdfBytes = await pdfDocLib.save()
-    const blob = new Blob([pdfBytes], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `Signed_${pdfFile.name}`
-    link.click()
+    targetPage.drawImage(embeddedSig, { x: pdfX, y: pdfY, width: finalW, height: finalH, rotate: degrees(pdfRot) })
+
+    const saved = await pdfDocLib.save()
+    const url = URL.createObjectURL(new Blob([saved], { type: 'application/pdf' }))
+    Object.assign(document.createElement('a'), { href: url, download: `Signed_${pdfFile.name}` }).click()
   }
+
+  // ─── Render ─────────────────────────────────────────────────────
+  const showEditor = pdfFile
+  const showSig = !!sigSvgUrl && !isProcessing
 
   return (
     <div className="app-container">
       <header className="navbar">
-        <h1>FreeSign</h1>
-        <p>Sign PDFs directly in your browser. Fast, free, and secure.</p>
+        <div className="navbar-brand">
+          <Pen size={22} className="brand-icon" />
+          <h1>FreeSign</h1>
+        </div>
+        <p>Sign PDFs directly in your browser — fully private, fully free.</p>
       </header>
-      
+
       <main className="main-content">
+        {/* ── Sidebar ── */}
         <aside className="sidebar">
-          
+
+          {/* Step 1 */}
           <div className="panel">
-            <h3>1. Upload Document</h3>
+            <h3>① Upload Document</h3>
             <label className="upload-btn">
-              <Upload size={18} /> {pdfFile ? pdfFile.name : "Select PDF"}
+              <Upload size={16} />
+              <span>{pdfFile ? pdfFile.name : 'Select PDF'}</span>
               <input type="file" accept="application/pdf" onChange={handlePdfUpload} hidden />
             </label>
           </div>
 
+          {/* Step 2 */}
           <div className="panel">
-            <h3>2. Signature Source</h3>
-            
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-              <button 
-                onClick={() => setSignatureMode('draw')}
-                style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: signatureMode === 'draw' ? '#e2e8f0' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-              >
-                <PenTool size={16} /> Draw
-              </button>
-              <button 
-                onClick={() => setSignatureMode('upload')}
-                style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: signatureMode === 'upload' ? '#e2e8f0' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-              >
-                <ImageIcon size={16} /> Upload
-              </button>
-            </div>
+            <h3>② Upload Signature Photo</h3>
+            <label className="upload-btn">
+              <Upload size={16} />
+              <span>{signatureSrc ? 'Change Signature' : 'Select Photo'}</span>
+              <input type="file" accept="image/*" onChange={handleSigUpload} hidden />
+            </label>
 
-            {signatureMode === 'upload' ? (
-              <>
-                <label className="upload-btn">
-                  <Upload size={18} /> {signatureSrc ? "Change Signature Photo" : "Select Signature Photo"}
-                  <input type="file" accept="image/*" onChange={handleSigUpload} hidden />
-                </label>
-                {(processedSignature || isProcessing) && (
-                  <div className="sig-preview-container" style={{ marginTop: '12px' }}>
-                    {isProcessing ? (
-                      <div className="loading-spinner">
-                        <Loader2 className="animate-spin text-blue-500" size={32} />
-                        <p>Processing...</p>
-                      </div>
-                    ) : (
-                      <img src={processedSignature} alt="Processed Signature" className="sig-preview" />
-                    )}
+            {/* Preview */}
+            {(sigSvgUrl || isProcessing) && (
+              <div className="sig-preview-container">
+                {isProcessing ? (
+                  <div className="loading-state">
+                    <Loader2 size={28} className="spin" />
+                    <p>Vectorizing…</p>
+                    <span className="loading-sub">Tracing ink paths</span>
                   </div>
+                ) : (
+                  <img src={sigSvgUrl} alt="Signature preview" className="sig-preview" />
                 )}
-              </>
-            ) : (
-              <SignaturePad 
-                strokes={drawnStrokes}
-                setStrokes={setDrawnStrokes}
-                thickness={inkThickness}
-                smoothing={inkSmoothing}
-                taper={inkTaper}
-                color={sigColor}
-              />
+              </div>
             )}
-            
           </div>
 
-          {(processedSignature || signatureMode === 'draw') && (
-            <div className="panel settings-panel">
-              <h3><Settings size={18} /> Settings</h3>
-              
+          {/* ── Style controls ── */}
+          {vectorData && !isProcessing && (
+            <div className="panel controls-panel">
+              <h3><Sliders size={15} /> Signature Style</h3>
+
               <div className="setting-group">
-                <label>Ink Color:</label>
-                <input type="color" value={sigColor} onChange={e => setSigColor(e.target.value)} disabled={isProcessing} />
+                <label>Ink Color</label>
+                <input type="color" value={style.color} onChange={e => setSingleStyle('color', e.target.value)} />
               </div>
 
-              <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '12px' }}>Thickness</label>
-                <input type="range" min="0" max="24" step="1" value={inkThickness} onChange={e => setInkThickness(parseFloat(e.target.value))} />
-              </div>
-              <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: '12px' }}>Smoothing</label>
-                <input type="range" min="0" max="2" step="0.1" value={inkSmoothing} onChange={e => setInkSmoothing(parseFloat(e.target.value))} />
-              </div>
+              <Slider label="Thickness"   min={0.5} max={12}  step={0.5} value={style.thickness}   onChange={v => setSingleStyle('thickness', v)}   unit="px" />
+              <Slider label="Smoothness"  min={0}   max={12}  step={1}   value={style.smoothness}  onChange={v => setSingleStyle('smoothness', v)} />
+              <Slider label="Curve Tension" min={3} max={12}  step={1}   value={style.tension}     onChange={v => setSingleStyle('tension', v)} />
+              <Slider label="Taper Amount" min={0}  max={1}   step={0.05} value={style.taperAmount} onChange={v => setSingleStyle('taperAmount', v)} />
+              <Slider label="Texture / Grain" min={0} max={1} step={0.05} value={style.texture}   onChange={v => setSingleStyle('texture', v)} />
 
-              {signatureMode === 'draw' && (
-                <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <label style={{ fontSize: '12px' }}>End Tapering</label>
-                  <input type="range" min="0" max="1" step="0.1" value={inkTaper} onChange={e => setInkTaper(parseFloat(e.target.value))} />
+              <div className="setting-group">
+                <label>End Cap Style</label>
+                <div className="segmented">
+                  {['round', 'butt', 'square'].map(cap => (
+                    <button
+                      key={cap}
+                      className={`seg-btn${style.linecap === cap ? ' active' : ''}`}
+                      onClick={() => setSingleStyle('linecap', cap)}
+                    >
+                      {cap}
+                    </button>
+                  ))}
                 </div>
-              )}
+              </div>
+
+              <div className="setting-group toggle-group">
+                <label>Taper Mode</label>
+                <label className="toggle">
+                  <input type="checkbox" checked={style.useTaper} onChange={e => setSingleStyle('useTaper', e.target.checked)} />
+                  <span className="toggle-track" />
+                </label>
+              </div>
             </div>
           )}
 
-          <div className="panel export-panel">
-            <h3>3. Export</h3>
-            <button className="export-btn" disabled={!pdfFile || !processedSignature || isProcessing} onClick={handleExport}>
-              <Download size={18} /> Export Signed PDF
+          {/* Step 3 */}
+          <div className="panel">
+            <h3>③ Export</h3>
+            <button
+              className="export-btn"
+              disabled={!pdfFile || !vectorData || isProcessing}
+              onClick={handleExport}
+            >
+              <Download size={16} /> Download Signed PDF
             </button>
           </div>
 
         </aside>
 
+        {/* ── Editor canvas ── */}
         <section className="editor">
-          {!pdfFile ? (
+          {!showEditor ? (
             <div className="empty-state">
+              <Pen size={48} className="empty-icon" />
               <h2>Upload a PDF to get started</h2>
+              <p>Your files never leave your device</p>
             </div>
           ) : (
             <div className="pdf-workspace">
               <div className="toolbar">
                 <button disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)}>
-                  <ChevronLeft size={18} />
+                  <ChevronLeft size={16} />
                 </button>
                 <span>Page {currentPage} of {numPages}</span>
                 <button disabled={currentPage >= numPages} onClick={() => setCurrentPage(p => p + 1)}>
-                  <ChevronRight size={18} />
+                  <ChevronRight size={16} />
                 </button>
               </div>
 
               <div className="canvas-container">
                 <canvas ref={canvasRef} className="pdf-canvas" />
-                
-                {processedSignature && !isProcessing && (
+
+                {showSig && (
                   <>
-                    <img 
+                    <img
                       ref={sigRef}
-                      src={processedSignature} 
-                      alt="Draggable Signature" 
+                      src={sigSvgUrl}
+                      alt="Draggable signature"
                       className="signature-target"
                       onLoad={handleImageLoad}
+                      draggable={false}
                       style={{
                         position: 'absolute',
                         top: 0,
@@ -368,34 +383,28 @@ function App() {
                         width: `${frame.current.width}px`,
                         height: `${frame.current.height}px`,
                         transform: `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${frame.current.rotate}deg)`,
-                        cursor: 'grab'
                       }}
                     />
                     <Moveable
                       target={sigRef}
-                      draggable={true}
-                      resizable={true}
-                      rotatable={true}
-                      keepRatio={true}
-                      throttleDrag={1}
-                      throttleResize={1}
-                      throttleRotate={1}
-                      renderDirections={["nw","n","ne","w","e","sw","s","se"]}
+                      draggable resizable rotatable keepRatio
+                      throttleDrag={1} throttleResize={1} throttleRotate={0.5}
+                      renderDirections={['nw','n','ne','w','e','sw','s','se']}
                       onDrag={e => {
-                        frame.current.translate = e.beforeTranslate;
-                        e.target.style.transform = `translate(${e.beforeTranslate[0]}px, ${e.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`;
+                        frame.current.translate = e.beforeTranslate
+                        e.target.style.transform = `translate(${e.beforeTranslate[0]}px, ${e.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`
                       }}
                       onResize={e => {
-                        frame.current.width = e.width;
-                        frame.current.height = e.height;
-                        frame.current.translate = e.drag.beforeTranslate;
-                        e.target.style.width = `${e.width}px`;
-                        e.target.style.height = `${e.height}px`;
-                        e.target.style.transform = `translate(${e.drag.beforeTranslate[0]}px, ${e.drag.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`;
+                        frame.current.width = e.width
+                        frame.current.height = e.height
+                        frame.current.translate = e.drag.beforeTranslate
+                        e.target.style.width = `${e.width}px`
+                        e.target.style.height = `${e.height}px`
+                        e.target.style.transform = `translate(${e.drag.beforeTranslate[0]}px, ${e.drag.beforeTranslate[1]}px) rotate(${frame.current.rotate}deg)`
                       }}
                       onRotate={e => {
-                        frame.current.rotate = e.beforeRotate;
-                        e.target.style.transform = `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${e.beforeRotate}deg)`;
+                        frame.current.rotate = e.beforeRotate
+                        e.target.style.transform = `translate(${frame.current.translate[0]}px, ${frame.current.translate[1]}px) rotate(${e.beforeRotate}deg)`
                       }}
                     />
                   </>
@@ -408,5 +417,3 @@ function App() {
     </div>
   )
 }
-
-export default App
