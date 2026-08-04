@@ -69,6 +69,8 @@ export default function App() {
   const [vectorData, setVectorData] = useState(null)   // { chains, width, height }
   const [sigSvgUrl, setSigSvgUrl] = useState(null)     // object URL of current SVG
   const [isProcessing, setIsProcessing] = useState(false)
+  const [progressMsg, setProgressMsg] = useState('')
+  const [progressPct, setProgressPct] = useState(0)
 
   // Style — pure data, changing any field instantly re-renders SVG
   const [style, setStyle] = useState(DEFAULT_STYLE)
@@ -123,15 +125,22 @@ export default function App() {
   useEffect(() => {
     if (!signatureSrc) return
     setIsProcessing(true)
+    setProgressMsg('Loading image\u2026')
+    setProgressPct(0)
     setVectorData(null)
     setSigSvgUrl(null)
 
-    vectorize(signatureSrc).then(data => {
+    vectorize(signatureSrc, (phase, pct) => {
+      setProgressMsg(phase)
+      setProgressPct(pct)
+    }).then(data => {
       setVectorData(data)
       setIsProcessing(false)
+      setProgressMsg('')
     }).catch(err => {
       console.error('Vectorization failed:', err)
       setIsProcessing(false)
+      setProgressMsg('')
     })
   }, [signatureSrc])
 
@@ -279,8 +288,11 @@ export default function App() {
                 {isProcessing ? (
                   <div className="loading-state">
                     <Loader2 size={28} className="spin" />
-                    <p>Vectorizing…</p>
-                    <span className="loading-sub">Tracing ink paths</span>
+                    <p>{progressMsg || 'Processing\u2026'}</p>
+                    <div className="progress-bar-track">
+                      <div className="progress-bar-fill" style={{ width: `${progressPct}%` }} />
+                    </div>
+                    <span className="loading-sub">{progressPct}%</span>
                   </div>
                 ) : (
                   <img src={sigSvgUrl} alt="Signature preview" className="sig-preview" />
