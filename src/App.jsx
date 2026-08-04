@@ -6,7 +6,8 @@ import { processSignature } from './imageProcessor'
 import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2, PenTool, Image as ImageIcon } from 'lucide-react'
 import Moveable from 'react-moveable'
 import { SignaturePad } from './SignaturePad'
-import { strokesToPngUrl } from './signatureUtils'
+import { strokesToPngUrl, vectorizePathsToPngUrl } from './signatureUtils'
+import { vectorizeSignature } from './vectorizer'
 import './App.css'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
@@ -22,6 +23,7 @@ function App() {
   const [signatureSrc, setSignatureSrc] = useState(null)
   const [processedSignature, setProcessedSignature] = useState(null)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [uploadedVectorPaths, setUploadedVectorPaths] = useState([])
   
   // Digital Ink State
   const [drawnStrokes, setDrawnStrokes] = useState([])
@@ -80,13 +82,26 @@ function App() {
     if (signatureMode === 'upload' && signatureSrc) {
       setIsProcessing(true)
       setTimeout(() => {
+        // Step 1: Remove background
         processSignature(signatureSrc, sigColor).then(res => {
-          setProcessedSignature(res)
-          setIsProcessing(false)
+          // Step 2: Auto-Trace to Vector
+          vectorizeSignature(res, inkSmoothing).then(paths => {
+             setUploadedVectorPaths(paths)
+          })
         })
       }, 100)
     }
-  }, [signatureSrc, sigColor, signatureMode])
+  }, [signatureSrc, sigColor, signatureMode, inkSmoothing])
+
+  // Apply Digital Ink styling to Uploaded Vectors
+  useEffect(() => {
+    if (signatureMode === 'upload' && uploadedVectorPaths.length > 0) {
+      vectorizePathsToPngUrl(uploadedVectorPaths, inkThickness, sigColor).then(url => {
+        setProcessedSignature(url)
+        setIsProcessing(false)
+      })
+    }
+  }, [uploadedVectorPaths, inkThickness, sigColor, signatureMode])
 
   // Process drawn digital ink
   useEffect(() => {
@@ -291,21 +306,20 @@ function App() {
                 <input type="color" value={sigColor} onChange={e => setSigColor(e.target.value)} disabled={isProcessing} />
               </div>
 
+              <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '12px' }}>Thickness</label>
+                <input type="range" min="0" max="24" step="1" value={inkThickness} onChange={e => setInkThickness(parseFloat(e.target.value))} />
+              </div>
+              <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '12px' }}>Smoothing</label>
+                <input type="range" min="0" max="2" step="0.1" value={inkSmoothing} onChange={e => setInkSmoothing(parseFloat(e.target.value))} />
+              </div>
+
               {signatureMode === 'draw' && (
-                <>
-                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <label style={{ fontSize: '12px' }}>Thickness</label>
-                    <input type="range" min="2" max="24" step="1" value={inkThickness} onChange={e => setInkThickness(parseFloat(e.target.value))} />
-                  </div>
-                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <label style={{ fontSize: '12px' }}>Smoothing</label>
-                    <input type="range" min="0" max="2" step="0.1" value={inkSmoothing} onChange={e => setInkSmoothing(parseFloat(e.target.value))} />
-                  </div>
-                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <label style={{ fontSize: '12px' }}>End Tapering</label>
-                    <input type="range" min="0" max="1" step="0.1" value={inkTaper} onChange={e => setInkTaper(parseFloat(e.target.value))} />
-                  </div>
-                </>
+                <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '12px' }}>End Tapering</label>
+                  <input type="range" min="0" max="1" step="0.1" value={inkTaper} onChange={e => setInkTaper(parseFloat(e.target.value))} />
+                </div>
               )}
             </div>
           )}

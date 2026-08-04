@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "imagetracerjs": "^1.2.6",
     "lucide-react": "^1.28.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",

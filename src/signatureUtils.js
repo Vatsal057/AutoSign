@@ -63,7 +63,67 @@ export function strokesToPngUrl(strokes, thickness, smoothing, taper, color) {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      // Scale up 2x for high resolution export!
+      canvas.width = width * 2;
+      canvas.height = height * 2;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(2, 2);
+      ctx.drawImage(img, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.src = url;
+  });
+}
+
+export function vectorizePathsToPngUrl(paths, thickness, color) {
+  return new Promise((resolve) => {
+    if (!paths || paths.length === 0) return resolve(null);
+    
+    // We don't have bounding box from raw paths easily without a DOM node.
+    // However, the original SVG had width/height matching the image. 
+    // We can just render the paths into a large enough SVG. Wait!
+    // imagetracerjs preserves the original image dimensions in the coordinates.
+    // It's best if we just use a DOM parser or calculate BBox via an offscreen SVG.
+    
+    const svgContainer = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    paths.forEach(d => {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      svgContainer.appendChild(path);
+    });
+    document.body.appendChild(svgContainer);
+    const bbox = svgContainer.getBBox();
+    document.body.removeChild(svgContainer);
+    
+    if (bbox.width === 0 || bbox.height === 0) return resolve(null);
+    
+    const pad = thickness * 2 + 10;
+    const width = bbox.width + pad * 2;
+    const height = bbox.height + pad * 2;
+    
+    // Offset paths to normalize the bounding box to (0,0)
+    // We can just use an SVG viewBox!
+    const viewBox = `${bbox.x - pad} ${bbox.y - pad} ${width} ${height}`;
+    
+    const svgPaths = paths.map(d => {
+      return `<path d="${d}" fill="${color}" stroke="${color}" stroke-width="${thickness}" stroke-linejoin="round" stroke-linecap="round" filter="url(#ink-texture)" />`;
+    }).join('');
+    
+    const svgString = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${viewBox}">
+        <filter id="ink-texture">
+          <feTurbulence type="fractalNoise" baseFrequency="0.05" result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="2" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+        ${svgPaths}
+      </svg>
+    `;
+    
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
       canvas.width = width * 2;
       canvas.height = height * 2;
       const ctx = canvas.getContext('2d');
