@@ -3,8 +3,10 @@ import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { PDFDocument, degrees } from 'pdf-lib'
 import { processSignature } from './imageProcessor'
-import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2 } from 'lucide-react'
+import { Upload, Download, ChevronLeft, ChevronRight, Settings, Loader2, PenTool, Image as ImageIcon } from 'lucide-react'
 import Moveable from 'react-moveable'
+import { SignaturePad } from './SignaturePad'
+import { strokesToPngUrl } from './signatureUtils'
 import './App.css'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker
@@ -15,9 +17,17 @@ function App() {
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   
+  const [signatureMode, setSignatureMode] = useState('draw') // 'upload' or 'draw'
+  
   const [signatureSrc, setSignatureSrc] = useState(null)
   const [processedSignature, setProcessedSignature] = useState(null)
   const [isProcessing, setIsProcessing] = useState(false)
+  
+  // Digital Ink State
+  const [drawnStrokes, setDrawnStrokes] = useState([])
+  const [inkThickness, setInkThickness] = useState(8)
+  const [inkSmoothing, setInkSmoothing] = useState(0.5)
+  const [inkTaper, setInkTaper] = useState(0.6)
   
   const [sigColor, setSigColor] = useState('#000f55')
   
@@ -65,19 +75,31 @@ function App() {
     renderPage()
   }, [pdfDoc, currentPage])
 
-  // Process signature image
+  // Process uploaded signature image
   useEffect(() => {
-    if (!signatureSrc) return;
-    setIsProcessing(true)
-    
-    // small timeout to allow UI to show spinner
-    setTimeout(() => {
-      processSignature(signatureSrc, sigColor).then(res => {
-        setProcessedSignature(res)
-        setIsProcessing(false)
-      })
-    }, 100)
-  }, [signatureSrc, sigColor])
+    if (signatureMode === 'upload' && signatureSrc) {
+      setIsProcessing(true)
+      setTimeout(() => {
+        processSignature(signatureSrc, sigColor).then(res => {
+          setProcessedSignature(res)
+          setIsProcessing(false)
+        })
+      }, 100)
+    }
+  }, [signatureSrc, sigColor, signatureMode])
+
+  // Process drawn digital ink
+  useEffect(() => {
+    if (signatureMode === 'draw') {
+      if (drawnStrokes.length > 0) {
+         strokesToPngUrl(drawnStrokes, inkThickness, inkSmoothing, inkTaper, sigColor).then(url => {
+            setProcessedSignature(url)
+         })
+      } else {
+         setProcessedSignature(null)
+      }
+    }
+  }, [drawnStrokes, inkThickness, inkSmoothing, inkTaper, sigColor, signatureMode])
 
   const handlePdfUpload = (e) => {
     if (e.target.files[0]) setPdfFile(e.target.files[0])
@@ -91,9 +113,10 @@ function App() {
   }
 
   const handleImageLoad = (e) => {
-    if (frame.current.height !== 100) return; // already initialized
+    if (frame.current.height !== 100 && signatureMode === 'upload') return; 
+    // Always recalculate aspect ratio when drawn ink updates, but keep translate/rotate state
     const ratio = e.target.naturalHeight / e.target.naturalWidth;
-    const initialWidth = 250;
+    const initialWidth = signatureMode === 'draw' ? 200 : 250;
     const initialHeight = initialWidth * ratio;
     
     frame.current.width = initialWidth;
@@ -210,27 +233,56 @@ function App() {
           </div>
 
           <div className="panel">
-            <h3>2. Upload Signature</h3>
-            <label className="upload-btn">
-              <Upload size={18} /> {signatureSrc ? "Change Signature" : "Select Signature Photo"}
-              <input type="file" accept="image/*" onChange={handleSigUpload} hidden />
-            </label>
+            <h3>2. Signature Source</h3>
             
-            {(processedSignature || isProcessing) && (
-              <div className="sig-preview-container">
-                {isProcessing ? (
-                  <div className="loading-spinner">
-                    <Loader2 className="animate-spin text-blue-500" size={32} />
-                    <p>Processing...</p>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <button 
+                onClick={() => setSignatureMode('draw')}
+                style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: signatureMode === 'draw' ? '#e2e8f0' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+              >
+                <PenTool size={16} /> Draw
+              </button>
+              <button 
+                onClick={() => setSignatureMode('upload')}
+                style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', background: signatureMode === 'upload' ? '#e2e8f0' : '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+              >
+                <ImageIcon size={16} /> Upload
+              </button>
+            </div>
+
+            {signatureMode === 'upload' ? (
+              <>
+                <label className="upload-btn">
+                  <Upload size={18} /> {signatureSrc ? "Change Signature Photo" : "Select Signature Photo"}
+                  <input type="file" accept="image/*" onChange={handleSigUpload} hidden />
+                </label>
+                {(processedSignature || isProcessing) && (
+                  <div className="sig-preview-container" style={{ marginTop: '12px' }}>
+                    {isProcessing ? (
+                      <div className="loading-spinner">
+                        <Loader2 className="animate-spin text-blue-500" size={32} />
+                        <p>Processing...</p>
+                      </div>
+                    ) : (
+                      <img src={processedSignature} alt="Processed Signature" className="sig-preview" />
+                    )}
                   </div>
-                ) : (
-                  <img src={processedSignature} alt="Processed Signature" className="sig-preview" />
                 )}
-              </div>
+              </>
+            ) : (
+              <SignaturePad 
+                strokes={drawnStrokes}
+                setStrokes={setDrawnStrokes}
+                thickness={inkThickness}
+                smoothing={inkSmoothing}
+                taper={inkTaper}
+                color={sigColor}
+              />
             )}
+            
           </div>
 
-          {processedSignature && (
+          {(processedSignature || signatureMode === 'draw') && (
             <div className="panel settings-panel">
               <h3><Settings size={18} /> Settings</h3>
               
@@ -238,6 +290,23 @@ function App() {
                 <label>Ink Color:</label>
                 <input type="color" value={sigColor} onChange={e => setSigColor(e.target.value)} disabled={isProcessing} />
               </div>
+
+              {signatureMode === 'draw' && (
+                <>
+                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '12px' }}>Thickness</label>
+                    <input type="range" min="2" max="24" step="1" value={inkThickness} onChange={e => setInkThickness(parseFloat(e.target.value))} />
+                  </div>
+                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '12px' }}>Smoothing</label>
+                    <input type="range" min="0" max="2" step="0.1" value={inkSmoothing} onChange={e => setInkSmoothing(parseFloat(e.target.value))} />
+                  </div>
+                  <div className="setting-group" style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <label style={{ fontSize: '12px' }}>End Tapering</label>
+                    <input type="range" min="0" max="1" step="0.1" value={inkTaper} onChange={e => setInkTaper(parseFloat(e.target.value))} />
+                  </div>
+                </>
+              )}
             </div>
           )}
 
