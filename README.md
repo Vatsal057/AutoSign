@@ -1,43 +1,16 @@
-# AutoSign
+# React + Vite
 
-A simple, open-source desktop utility that takes a photo of your hand-written signature, seamlessly removes the background, cleans it up to look like a perfectly crisp digital ink stroke, and securely embeds it into any PDF.
+This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
-![AutoSign Preview](https://via.placeholder.com/800x400?text=AutoSign+Screenshot)
+Currently, two official plugins are available:
 
-## Features
-- **Auto-Deskew**: Automatically detects the angle of your signature and perfectly squares it.
-- **Background Removal & Cleanup**: Uses adaptive thresholding to perfectly isolate your ink from the paper, leaving behind crisp, authentic-looking pen strokes.
-- **Smart PDF Insertion**: Programmatically inserts the signature perfectly on the baseline of the target "Signature:" field, avoiding overlap with other document text.
-- **100% Local**: No cloud APIs. Your sensitive documents and signature stay entirely on your machine.
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
 
-## Download & Run
-You do not need to be a developer to use AutoSign!
-Head over to the [Releases](https://github.com/vatsal/AutoSign/releases) tab and download the standalone app for Windows or macOS. Double-click to run.
+## React Compiler
 
-## Development Setup
-If you want to run from source or contribute to the project:
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-```bash
-# Clone the repository
-git clone https://github.com/vatsal/AutoSign.git
-cd AutoSign
+## Expanding the Oxlint configuration
 
-# Set up virtual environment and install dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Run the app
-python app.py
-```
-
-## How to Build the Executable
-We use PyInstaller to build the standalone app. A GitHub Action handles this automatically, but you can build locally:
-
-```bash
-pip install pyinstaller
-pyinstaller --noconsole --onefile --name AutoSign app.py
-```
-
-## License
-MIT License
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
